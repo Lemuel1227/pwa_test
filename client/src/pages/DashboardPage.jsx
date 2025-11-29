@@ -1,12 +1,57 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import TaskModal from '../components/TaskModal.jsx';
 import TaskList from '../components/TaskList.jsx';
 import { useTasks } from '../hooks/useTasks.js';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
+import { toast } from 'react-toastify';
+import ConfirmDeleteModal from '../components/ConfirmDeleteModal.jsx';
 
 const DashboardPage = () => {
-  const { tasks, status, error, createTask, updateTask, deleteTask, upcomingTasks } = useTasks();
+  const { 
+    tasks, 
+    status, 
+    error, 
+    createTask, 
+    updateTask, 
+    deleteTask, 
+    upcomingTasks,
+    syncOfflineTasks
+  } = useTasks();
+  
   const [editingTask, setEditingTask] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const { isOnline, wasOffline } = useNetworkStatus();
+  const [showOfflineBanner, setShowOfflineBanner] = useState(false);
+  
+  // Handle network status changes and sync tasks when coming back online
+  useEffect(() => {
+    if (!isOnline) {
+      setShowOfflineBanner(true);
+    } else if (wasOffline) {
+      // Start syncing when coming back online
+      const syncTasks = async () => {
+        try {
+          await syncOfflineTasks();
+          toast.success('Tasks synced successfully!');
+        } catch (err) {
+          console.error('Error syncing tasks:', err);
+          toast.error('Failed to sync tasks. Some changes may not be saved.');
+        } finally {
+          // Keep showing the banner briefly after syncing
+          const timer = setTimeout(() => {
+            setShowOfflineBanner(false);
+          }, 5000);
+          return () => clearTimeout(timer);
+        }
+      };
+      syncTasks();
+    } else {
+      setShowOfflineBanner(false);
+    }
+  }, [isOnline, wasOffline, syncOfflineTasks]);
 
   const stats = useMemo(() => {
     const total = tasks.length;
@@ -22,25 +67,72 @@ const DashboardPage = () => {
   };
 
   const handleSubmit = async (payload) => {
-    if (editingTask) {
-      const result = await updateTask(editingTask._id, payload);
+    try {
+      if (editingTask) {
+        const result = await updateTask(editingTask._id, payload);
+        if (result.success) {
+          setEditingTask(null);
+          setShowModal(false);
+          if (!isOnline) {
+            toast.info('Changes will be synced when you are back online');
+          }
+        } else if (!isOnline) {
+          toast.error('Failed to save changes offline. Please try again when online.');
+        }
+        return result;
+      }
+
+      const result = await createTask(payload);
       if (result.success) {
-        setEditingTask(null);
         setShowModal(false);
+        if (!isOnline) {
+          toast.info('Task will be synced when you are back online');
+        }
+      } else if (!isOnline) {
+        toast.error('Failed to create task offline. Please try again when online.');
       }
       return result;
+    } catch (err) {
+      console.error('Error saving task:', err);
+      throw err;
     }
-
-    const result = await createTask(payload);
-    if (result.success) {
-      setShowModal(false);
-    }
-    return result;
   };
 
-  const handleDelete = async (task) => {
-    if (!window.confirm(`Delete task "${task.title}"?`)) return;
-    await deleteTask(task._id);
+  const handleDeleteRequest = (task) => {
+    setDeleteTarget(task);
+    setIsDeleteModalOpen(true);
+  };
+
+  const handleCancelDelete = () => {
+    if (isDeleting) return;
+    setIsDeleteModalOpen(false);
+    setDeleteTarget(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+
+    try {
+      setIsDeleting(true);
+      const result = await deleteTask(deleteTarget._id);
+
+      if (result.success) {
+        if (result.offline) {
+          toast.info('Deletion queued. It will sync when you reconnect.');
+        } else {
+          toast.success('Task deleted successfully.');
+        }
+      } else {
+        toast.error(result.error || 'Failed to delete task. Please try again.');
+      }
+    } catch (err) {
+      console.error('Error deleting task:', err);
+      toast.error('Failed to delete task. Please try again.');
+    } finally {
+      setIsDeleting(false);
+      setDeleteTarget(null);
+      setIsDeleteModalOpen(false);
+    }
   };
 
   const handleCloseModal = () => {
@@ -56,13 +148,29 @@ const DashboardPage = () => {
   ];
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '2rem', display: 'grid', gap: '2rem' }}>
-      <div>
-        <h1 style={{ fontSize: '2rem', margin: '0 0 0.5rem 0', color: '#1f2937' }}>Dashboard</h1>
-        <p style={{ margin: 0, color: '#6b7280' }}>Manage your training tasks and monitor progress</p>
-      </div>
+    <div className="dashboard">
+      {showOfflineBanner && (
+        <div className="offline-banner" style={{
+          background: isOnline ? '#d1fae5' : '#fef3c7',
+          color: isOnline ? '#065f46' : '#92400e',
+          padding: '1rem',
+          marginBottom: '1.5rem',
+          borderRadius: '8px',
+          textAlign: 'center',
+          fontWeight: 500
+        }}>
+          {isOnline 
+            ? "Syncing your latest updates..." 
+            : "You are currently offline. Recent drills and schedules you viewed are still available. Once you're back online, we will sync the latest updates automatically."}
+        </div>
+      )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem' }}>
+      <div style={{ 
+        display: 'grid', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', 
+        gap: '1rem',
+        marginBottom: '2rem'
+      }}>
         {statCards.map((stat) => (
           <div key={stat.label} style={{
             background: 'white',
@@ -111,7 +219,13 @@ const DashboardPage = () => {
             </button>
           </div>
 
-          <TaskList tasks={tasks} onEdit={handleEdit} onDelete={handleDelete} />
+          <TaskList 
+            tasks={upcomingTasks} 
+            onEdit={handleEdit} 
+            onDelete={handleDeleteRequest} 
+            loading={status === 'loading'}
+            error={error}
+          />
         </div>
 
         <div style={{ display: 'grid', gap: '2rem' }}>
@@ -157,6 +271,20 @@ const DashboardPage = () => {
         onClose={handleCloseModal}
         onSubmit={handleSubmit}
         submitLabel={editingTask ? 'Update' : 'Create'}
+      />
+
+      <ConfirmDeleteModal
+        isOpen={isDeleteModalOpen}
+        title="Delete training task"
+        description={
+          deleteTarget
+            ? `Are you sure you want to delete "${deleteTarget.title}"? This action cannot be undone.`
+            : ''
+        }
+        confirmLabel="Delete task"
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+        isProcessing={isDeleting}
       />
     </div>
   );

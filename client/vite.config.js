@@ -7,7 +7,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'offline.html'],
+      includeAssets: ['favicon.svg'],
       manifest: {
         name: 'Sports Task Coach',
         short_name: 'TaskCoach',
@@ -38,7 +38,6 @@ export default defineConfig({
         ],
       },
       workbox: {
-        navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
@@ -48,12 +47,35 @@ export default defineConfig({
               cacheName: 'task-data',
               expiration: {
                 maxEntries: 50,
-                maxAgeSeconds: 60 * 60,
+                maxAgeSeconds: 60 * 60 * 24 // 24 hours
               },
               networkTimeoutSeconds: 3,
-            },
+              fetchOptions: {
+                credentials: 'same-origin'
+              },
+              cacheableResponse: {
+                statuses: [0, 200]
+              },
+              broadcastUpdate: {
+                channelName: 'task-updates',
+                options: {
+                  headersToCheck: ['content-type', 'content-length', 'etag']
+                }
+              }
+            }
           },
-        ],
+          {
+            urlPattern: /\/assets\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'static-assets',
+              expiration: {
+                maxEntries: 60,
+                maxAgeSeconds: 60 * 60 * 24 * 30 // 30 days
+              }
+            }
+          }
+        ]
       },
       devOptions: {
         enabled: true,
